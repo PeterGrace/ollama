@@ -1,74 +1,41 @@
 package llm
 
+// #cgo CFLAGS: -Illama.cpp -Illama.cpp/include -Illama.cpp/ggml/include
+// #cgo LDFLAGS: -lllama -lggml -lstdc++ -lpthread
+// #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/build/darwin/arm64_static -L${SRCDIR}/build/darwin/arm64_static/src -L${SRCDIR}/build/darwin/arm64_static/ggml/src -framework Accelerate -framework Metal
+// #cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/build/darwin/x86_64_static -L${SRCDIR}/build/darwin/x86_64_static/src -L${SRCDIR}/build/darwin/x86_64_static/ggml/src
+// #cgo windows,amd64 LDFLAGS: -static-libstdc++ -static-libgcc -static -L${SRCDIR}/build/windows/amd64_static -L${SRCDIR}/build/windows/amd64_static/src -L${SRCDIR}/build/windows/amd64_static/ggml/src
+// #cgo windows,arm64 LDFLAGS: -static-libstdc++ -static-libgcc -static -L${SRCDIR}/build/windows/arm64_static -L${SRCDIR}/build/windows/arm64_static/src -L${SRCDIR}/build/windows/arm64_static/ggml/src
+// #cgo linux,amd64 LDFLAGS: -L${SRCDIR}/build/linux/x86_64_static -L${SRCDIR}/build/linux/x86_64_static/src -L${SRCDIR}/build/linux/x86_64_static/ggml/src
+// #cgo linux,arm64 LDFLAGS: -L${SRCDIR}/build/linux/arm64_static -L${SRCDIR}/build/linux/arm64_static/src -L${SRCDIR}/build/linux/arm64_static/ggml/src
+// #include <stdlib.h>
+// #include "llama.h"
+import "C"
+
 import (
-	"fmt"
-	"log"
-	"os"
-
-	"github.com/pbnjay/memory"
-
-	"github.com/jmorganca/ollama/api"
+	"errors"
+	"unsafe"
 )
 
-type LLM interface {
-	Predict([]int, string, func(api.GenerateResponse)) error
-	Embedding(string) ([]float64, error)
-	Encode(string) []int
-	Decode(...int) string
-	SetOptions(api.Options)
-	Close()
+// SystemInfo is an unused example of calling llama.cpp functions using CGo
+func SystemInfo() string {
+	return C.GoString(C.llama_print_system_info())
 }
 
-func New(model string, adapters []string, opts api.Options) (LLM, error) {
-	if _, err := os.Stat(model); err != nil {
-		return nil, err
+func Quantize(infile, outfile string, ftype fileType) error {
+	cinfile := C.CString(infile)
+	defer C.free(unsafe.Pointer(cinfile))
+
+	coutfile := C.CString(outfile)
+	defer C.free(unsafe.Pointer(coutfile))
+
+	params := C.llama_model_quantize_default_params()
+	params.nthread = -1
+	params.ftype = ftype.Value()
+
+	if rc := C.llama_model_quantize(cinfile, coutfile, &params); rc != 0 {
+		return errors.New("failed to quantize model. This model architecture may not be supported, or you may need to upgrade Ollama to the latest version")
 	}
 
-	f, err := os.Open(model)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	ggml, err := DecodeGGML(f, ModelFamilyLlama)
-	if err != nil {
-		return nil, err
-	}
-
-	switch ggml.FileType {
-	case FileTypeF32, FileTypeF16, FileTypeQ5_0, FileTypeQ5_1, FileTypeQ8_0:
-		if opts.NumGPU != 0 {
-			// Q5_0, Q5_1, and Q8_0 do not support Metal API and will
-			// cause the runner to segmentation fault so disable GPU
-			log.Printf("WARNING: GPU disabled for F32, F16, Q5_0, Q5_1, and Q8_0")
-			opts.NumGPU = 0
-		}
-	}
-
-	totalResidentMemory := memory.TotalMemory()
-	switch ggml.ModelType {
-	case ModelType3B, ModelType7B:
-		if totalResidentMemory < 8*1024*1024 {
-			return nil, fmt.Errorf("model requires at least 8GB of memory")
-		}
-	case ModelType13B:
-		if totalResidentMemory < 16*1024*1024 {
-			return nil, fmt.Errorf("model requires at least 16GB of memory")
-		}
-	case ModelType30B:
-		if totalResidentMemory < 32*1024*1024 {
-			return nil, fmt.Errorf("model requires at least 32GB of memory")
-		}
-	case ModelType65B:
-		if totalResidentMemory < 64*1024*1024 {
-			return nil, fmt.Errorf("model requires at least 64GB of memory")
-		}
-	}
-
-	switch ggml.ModelFamily {
-	case ModelFamilyLlama:
-		return newLlama(model, adapters, opts)
-	default:
-		return nil, fmt.Errorf("unknown ggml type: %s", ggml.ModelFamily)
-	}
+	return nil
 }
